@@ -527,8 +527,9 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			platform,
 			arch: arch === 'armhf' ? 'arm' : arch,
 			ffmpegChromium: false,
+			darwinAssetsCar: 'resources/darwin/Assets.car',
 			...(embedded ? {
-				darwinMiniAppName: embedded.nameShort,
+				darwinMiniAppName: 'AppIcon',
 				darwinMiniAppBundleIdentifier: embedded.darwinBundleIdentifier,
 				darwinMiniAppIcon: 'resources/darwin/sessions.icns',
 				darwinMiniAppBundleURLTypes: [{
