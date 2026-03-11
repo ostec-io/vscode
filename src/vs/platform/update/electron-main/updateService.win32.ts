@@ -20,7 +20,7 @@ import { URI } from '../../../base/common/uri.js';
 import { checksum } from '../../../base/node/crypto.js';
 import * as pfs from '../../../base/node/pfs.js';
 import { killTree } from '../../../base/node/processes.js';
-import { getWindowsRelease } from '../../../base/node/windowsVersion.js';
+import { getWindowsBuildNumberAsync, getWindowsRelease } from '../../../base/node/windowsVersion.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { IFileService } from '../../files/common/files.js';
@@ -59,6 +59,8 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 	private availableUpdate: IAvailableUpdate | undefined;
 	private updateCancellationTokenSource: CancellationTokenSource | undefined;
+	private static readonly WIN11_BUILD = 22000;
+	private static readonly FORCED_CLASSIC_CONTEXT_MENU_REG_PATH = 'Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32';
 
 	@memoize
 	get cachePath(): Promise<string> {
@@ -366,6 +368,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		this.availableUpdate.cancelFilePath = cancelFilePath;
 
 		await pfs.Promises.writeFile(this.availableUpdate.updateFilePath, 'flag');
+		const mergeTasks = await this.getMergeTasksForUpdate();
 		const child = spawn(this.availableUpdate.packagePath,
 			[
 				'/verysilent',
@@ -375,7 +378,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				`/sessionend="${sessionEndFlagPath}"`,
 				`/cancel="${cancelFilePath}"`,
 				'/nocloseapplications',
-				'/mergetasks=runcode,!desktopicon,!quicklaunchicon'
+				`/mergetasks=${mergeTasks}`
 			],
 			{
 				detached: true,
@@ -443,6 +446,37 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		});
 	}
 
+	private async getMergeTasksForUpdate(): Promise<string> {
+		const mergeTasks: string[] = ['runcode', '!desktopicon', '!quicklaunchicon'];
+
+		if (await this.shouldMergeFolderContextMenuTask()) {
+			mergeTasks.push('addcontextmenufolders');
+		}
+
+		return mergeTasks.join(',');
+	}
+
+	private async shouldMergeFolderContextMenuTask(): Promise<boolean> {
+		try {
+			const buildNumber = await getWindowsBuildNumberAsync();
+			if (buildNumber < Win32UpdateService.WIN11_BUILD) {
+				return false;
+			}
+
+			const forcedClassicMenu = await this.nativeHostMainService.windowsGetStringRegKey(
+				undefined,
+				'HKEY_CURRENT_USER',
+				Win32UpdateService.FORCED_CLASSIC_CONTEXT_MENU_REG_PATH,
+				''
+			);
+
+			return forcedClassicMenu !== undefined;
+		} catch (error) {
+			this.logService.warn('update#shouldMergeFolderContextMenuTask: failed to inspect context menu registry state', error);
+			return false;
+		}
+	}
+
 	protected override async cancelPendingUpdate(): Promise<void> {
 		if (!this.availableUpdate) {
 			return;
@@ -501,10 +535,19 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				// ignore
 			}
 		} else {
-			spawn(this.availableUpdate.packagePath, ['/silent', '/log', '/mergetasks=runcode,!desktopicon,!quicklaunchicon'], {
-				detached: true,
-				stdio: ['ignore', 'ignore', 'ignore'],
-				env: { ...process.env, __COMPAT_LAYER: 'RunAsInvoker' }
+			this.getMergeTasksForUpdate().then(mergeTasks => {
+				spawn(this.availableUpdate!.packagePath, ['/silent', '/log', `/mergetasks=${mergeTasks}`], {
+					detached: true,
+					stdio: ['ignore', 'ignore', 'ignore'],
+					env: { ...process.env, __COMPAT_LAYER: 'RunAsInvoker' }
+				});
+			}).catch(error => {
+				this.logService.warn('update#doQuitAndInstall: failed to compute merge tasks, falling back to default merge task set', error);
+				spawn(this.availableUpdate!.packagePath, ['/silent', '/log', '/mergetasks=runcode,!desktopicon,!quicklaunchicon'], {
+					detached: true,
+					stdio: ['ignore', 'ignore', 'ignore'],
+					env: { ...process.env, __COMPAT_LAYER: 'RunAsInvoker' }
+				});
 			});
 		}
 	}

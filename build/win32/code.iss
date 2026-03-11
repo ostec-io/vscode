@@ -1527,6 +1527,14 @@ begin
   Result := IsWindows11OrLater() and not IsWindows10ContextMenuForced();
 end;
 
+function BoolToStr(Value: Boolean): String;
+begin
+  if Value then
+    Result := 'true'
+  else
+    Result := 'false';
+end;
+
 procedure LogContextMenuInstallState();
 begin
   Log(
@@ -1540,53 +1548,12 @@ begin
   );
 end;
 
-procedure RepairLegacyFolderContextMenuEntriesIfNeeded();
-var
-  FileMenuKey: String;
-  FolderMenuKey: String;
-  FolderBackgroundMenuKey: String;
-  DriveMenuKey: String;
-  HasFileMenuKey: Boolean;
-  HasFolderMenuKey: Boolean;
-  ContextMenuLabel: String;
-  IconValue: String;
-  CommandValue: String;
+procedure DeleteLegacyContextMenuRegistryKeys();
 begin
-  // Background updates can carry stale task state from previous installs.
-  // If the file context menu exists but folder entries are missing in legacy mode,
-  // restore folder entries to recover from split file/folder task state.
-  if not IsBackgroundUpdate() or ShouldUseWindows11ContextMenu() then
-    exit;
-
-  FileMenuKey := 'Software\Classes\*\shell\{#RegValueName}';
-  FolderMenuKey := 'Software\Classes\directory\shell\{#RegValueName}';
-  FolderBackgroundMenuKey := 'Software\Classes\directory\background\shell\{#RegValueName}';
-  DriveMenuKey := 'Software\Classes\Drive\shell\{#RegValueName}';
-
-  HasFileMenuKey := RegKeyExists({#EnvironmentRootKey}, FileMenuKey);
-  HasFolderMenuKey := RegKeyExists({#EnvironmentRootKey}, FolderMenuKey);
-  Log('Legacy context menu key check: hasFileMenuKey=' + BoolToStr(HasFileMenuKey) + ', hasFolderMenuKey=' + BoolToStr(HasFolderMenuKey));
-
-  if not HasFileMenuKey or HasFolderMenuKey then
-    exit;
-
-  Log('Repairing missing legacy folder context menu entries.');
-
-  ContextMenuLabel := ExpandConstant('{cm:OpenWithCodeContextMenu,{#ShellNameShort}}');
-  IconValue := ExpandConstant('{app}\{#ExeBasename}.exe');
-  CommandValue := AddQuotes(ExpandConstant('{app}\{#ExeBasename}.exe')) + ' "%V"';
-
-  RegWriteExpandStringValue({#EnvironmentRootKey}, FolderMenuKey, '', ContextMenuLabel);
-  RegWriteExpandStringValue({#EnvironmentRootKey}, FolderMenuKey, 'Icon', IconValue);
-  RegWriteExpandStringValue({#EnvironmentRootKey}, FolderMenuKey + '\command', '', CommandValue);
-
-  RegWriteExpandStringValue({#EnvironmentRootKey}, FolderBackgroundMenuKey, '', ContextMenuLabel);
-  RegWriteExpandStringValue({#EnvironmentRootKey}, FolderBackgroundMenuKey, 'Icon', IconValue);
-  RegWriteExpandStringValue({#EnvironmentRootKey}, FolderBackgroundMenuKey + '\command', '', CommandValue);
-
-  RegWriteExpandStringValue({#EnvironmentRootKey}, DriveMenuKey, '', ContextMenuLabel);
-  RegWriteExpandStringValue({#EnvironmentRootKey}, DriveMenuKey, 'Icon', IconValue);
-  RegWriteExpandStringValue({#EnvironmentRootKey}, DriveMenuKey + '\command', '', CommandValue);
+  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\*\shell\{#RegValueName}');
+  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\directory\shell\{#RegValueName}');
+  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\directory\background\shell\{#RegValueName}');
+  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\Drive\shell\{#RegValueName}');
 end;
 
 function GetAppMutex(Value: string): string;
@@ -1666,14 +1633,6 @@ begin
     Result := ExpandConstant('{#ApplicationName}.cmd');
 end;
 
-function BoolToStr(Value: Boolean): String;
-begin
-  if Value then
-    Result := 'true'
-  else
-    Result := 'false';
-end;
-
 function QualityIsInsiders(): boolean;
 begin
   if '{#Quality}' = 'insider' then
@@ -1696,11 +1655,13 @@ end;
 function AppxPackageInstalled(const name: String; var ResultCode: Integer): Boolean;
 begin
   AppxPackageFullname := '';
+  ResultCode := -1;
   try
     Log('Get-AppxPackage for package with name: ' + name);
     ExecAndLogOutput('powershell.exe', '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command ' + AddQuotes('Get-AppxPackage -Name ''' + name + ''' | Select-Object -ExpandProperty PackageFullName'), '', SW_HIDE, ewWaitUntilTerminated, ResultCode, @ExecAndGetFirstLineLog);
   except
     Log(GetExceptionMessage);
+    ResultCode := -1;
   end;
   if (AppxPackageFullname <> '') then
     Result := True
@@ -1769,7 +1730,6 @@ begin
   if CurStep = ssPostInstall then
   begin
     LogContextMenuInstallState();
-    RepairLegacyFolderContextMenuEntriesIfNeeded();
 
 #ifdef AppxPackageName
     // Remove the appx package when user has forced Windows 10 context menus via
@@ -1780,10 +1740,7 @@ begin
     end;
     // Remove the old context menu registry keys
     if ShouldUseWindows11ContextMenu() then begin
-      RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\*\shell\{#RegValueName}');
-      RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\directory\shell\{#RegValueName}');
-      RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\directory\background\shell\{#RegValueName}');
-      RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\Drive\shell\{#RegValueName}');
+      DeleteLegacyContextMenuRegistryKeys();
     end;
 #endif
 
@@ -1896,6 +1853,7 @@ begin
   if not CurUninstallStep = usUninstall then begin
     exit;
   end;
+
 #ifdef AppxPackageName
   RemoveAppxPackage();
 #endif
